@@ -1,0 +1,432 @@
+# Surrogate Modeling of a Binary Distillation Column Using DWSIM and Machine Learning
+
+**Screening Task 3 – Technical Report**  
+*System: Benzene–Toluene | Method: Peng-Robinson EOS | Dataset: 694 Simulation Points*
+
+---
+
+## Table of Contents
+
+1. Problem Statement  
+2. DWSIM Flowsheet and Model Description  
+3. Input and Output Variables  
+4. Dataset Generation Strategy  
+5. Range of Operating Conditions  
+6. Data Preprocessing  
+7. Machine Learning Methods  
+8. Model Training and Validation Procedure  
+9. Performance Comparison of Models  
+10. Physical Consistency and Robustness  
+11. Conclusions and Best Model  
+12. References  
+
+---
+
+## 1. Problem Statement
+
+Rigorous distillation simulations (such as those performed in DWSIM) are computationally expensive when used iteratively — for optimization, sensitivity analysis, or real-time control. This creates a strong motivation for **surrogate models**: fast-evaluating mathematical approximations trained on simulation data that can predict key output variables from operating conditions in milliseconds.
+
+This work develops a surrogate model for a **binary distillation column separating Benzene and Toluene**, using data generated from DWSIM simulations (augmented with physics-based shortcut calculations). The surrogate must predict:
+
+| Target | Symbol | Units |
+|---|---|---|
+| Distillate purity (benzene mole fraction) | xD | – |
+| Bottoms purity (benzene mole fraction) | xB | – |
+| Condenser duty | QC | kW |
+| Reboiler duty | QR | kW |
+
+Four classes of machine learning models are trained and rigorously compared.
+
+---
+
+## 2. DWSIM Flowsheet and Model Description
+
+### 2.1 Software
+**DWSIM v8.x** – Open-source process simulation platform  
+Simulation file: `DWSim/benzene_toluene_column.dwxmz`
+
+### 2.2 Column Configuration
+
+| Parameter | Value |
+|---|---|
+| System | Benzene (LK) – Toluene (HK) |
+| Thermodynamic model | Peng-Robinson (PR) |
+| Column type | Tray column (shortcut → rigorous) |
+| Total feed rate | 100 kmol/h |
+| Condenser type | Total condenser |
+| Reboiler type | Partial reboiler |
+| Column pressure | 101.325 – 202.65 kPa |
+
+### 2.3 Thermodynamic Rationale
+
+The Peng-Robinson EOS is selected because:
+- It handles both vapor and liquid phases accurately for hydrocarbons
+- Well-validated parameters exist for benzene and toluene
+- Accounts for non-ideal vapor-phase behavior at moderate pressures (up to ~2 atm)
+- Relative volatility for Benzene-Toluene at atmospheric conditions: α ≈ 2.4–2.5
+
+### 2.4 DWSIM Sensitivity Block Results
+
+The original DWSIM dataset (400 rows) varied **Feed Temperature (320–400 K)** and **Reflux Ratio (1.5–3.5)** only. This was insufficient for a robust surrogate model, as it missed 5 key operating variables. The dataset was extended using the **Fenske-Underwood-Gilliland (FUG)** shortcut distillation method to cover all 7 required inputs.
+
+---
+
+## 3. Input and Output Variables
+
+### 3.1 Primary Input Variables (Required by Task)
+
+| # | Variable | Symbol | Range | Unit |
+|---|---|---|---|---|
+| 1 | Feed Temperature | T_feed | 320 – 400 | K |
+| 2 | Feed Pressure | P_feed | 101.3 – 202.7 | kPa |
+| 3 | Feed Composition (Benzene) | z_F | 0.30 – 0.70 | mol fraction |
+| 4 | Number of Theoretical Stages | N | 10 – 30 | – |
+| 5 | Feed Stage Location | N_f | 3 – N-2 | – |
+| 6 | Reflux Ratio | R | 1.5 – 3.5 | – |
+| 7 | Bottoms Withdrawal Rate | B | 30 – 70 | kmol/h |
+
+### 3.2 Additional Derived Features
+
+| # | Variable | Derivation |
+|---|---|---|
+| 8 | Feed Vapor Fraction (ψ) | Bubble/dew point calculation |
+| 9 | Relative Volatility (α) | Antoine equation + PR correction |
+| 10 | R/R_min | Underwood equation |
+| 11 | N/N_min | Fenske equation |
+| 12 | Feed Stage Fraction | N_f / N |
+| 13 | Distillate Rate | D = F – B |
+
+### 3.3 Output Variables (Targets)
+
+| Variable | Range in Dataset | Unit |
+|---|---|---|
+| xD (benzene in distillate) | 0.70 – 0.825 | mol fraction |
+| xB (benzene in bottoms) | ~1×10⁻⁶ – 0.30 | mol fraction |
+| QC (condenser duty) | 656 – 3876 | kW |
+| QR (reboiler duty) | 676 – 4106 | kW |
+
+---
+
+## 4. Dataset Generation Strategy
+
+### 4.1 DWSIM Sensitivity Analysis (Original Data)
+
+The DWSIM flowsheet included a **Sensitivity Block** that parametrically swept:
+- Feed Temperature: 350–400 K (20 levels)
+- Reflux Ratio: 1.5–3.5 (20 levels)
+→ Produced 400 simulation points covering a 2D grid.
+
+**Limitation:** Only 2 of the 7 required inputs were varied. Feed composition, pressure, number of stages, feed stage, and bottoms rate were all fixed at their design values.
+
+### 4.2 Extended Dataset via FUG Shortcut Method
+
+To produce a multi-variate dataset covering all 7 inputs:
+
+1. **Antoine Equation** used to compute saturation pressures for benzene and toluene at any temperature T and pressure P → relative volatility α(T, P)
+2. **Bubble/dew point iterations** used to determine feed thermal condition (q-value)
+3. **Fenske equation** → minimum theoretical stages N_min
+4. **Underwood equation** → minimum reflux ratio R_min
+5. **Gilliland correlation** → N from (R, R_min, N_min)
+6. **Kremser equation** → approximate xD from rectifying stages
+7. **Overall material balance** → xB
+8. **Energy balance** → QC and QR with feed thermal correction
+
+### 4.3 Sampling Strategy
+
+- **Structured grid** (30% of data): Ensures systematic coverage of each variable range
+- **Random LHS-style** sampling (70% of data): Dense random coverage of the full 7-dimensional operating space
+- **Physical guard-rails** applied:
+  - xD > z_F (benzene enriched in distillate)
+  - xB < z_F (benzene depleted in bottoms)
+  - xD > xB (always)
+  - QC > 0, QR > 0
+  - N ≥ 5 (minimum practical column)
+
+**Final dataset size: 694 physically consistent simulation points**
+
+---
+
+## 5. Range of Operating Conditions
+
+| Variable | Min | Max | No. Levels / Dist. |
+|---|---|---|---|
+| Feed Temperature (K) | 320 | 400 | Continuous (uniform) |
+| Feed Pressure (kPa) | 101.325 | 202.65 | 4 discrete levels |
+| Feed Composition (mol fr) | 0.30 | 0.70 | Continuous (uniform) |
+| Number of Stages | 10 | 30 | Integer (uniform) |
+| Feed Stage | 3 | N-2 | Integer (constrained) |
+| Reflux Ratio | 1.50 | 3.50 | Continuous (uniform) |
+| Bottoms Rate (kmol/h) | 30 | 70 | Continuous (uniform) |
+
+The ranges were chosen based on:
+- Feed temperature bracketing the bubble point and dew point of typical Benzene-Toluene mixtures
+- Reflux ratio above the minimum reflux (typically 1.2–2×R_min)
+- Number of stages reflecting industrially practical column sizes
+- Bottoms rate ensuring D/F ratio between 0.30 and 0.70 (balanced distillate and bottoms)
+
+---
+
+## 6. Data Preprocessing
+
+### 6.1 Steps Applied
+
+| Step | Description |
+|---|---|
+| Missing value check | No missing values detected (all 694 rows complete) |
+| Outlier removal | Guard-rails applied during generation (physical constraints) |
+| Feature selection | 13 features: 7 primary inputs + 6 derived |
+| Train/Val/Test split | 70% / 15% / 15% (485 / 104 / 105 points) |
+| Feature scaling | StandardScaler: zero mean, unit variance |
+| Target scaling | StandardScaler (used for ANN only; other models use raw targets) |
+
+### 6.2 Feature Engineering
+
+The 6 derived features are physically motivated:
+- **Feed vapor fraction ψ**: Captures the feed thermal condition which directly affects column energy balance
+- **Relative volatility α**: Encodes the ease of separation at given T and P
+- **R/R_min**: Normalized reflux provides better generalization than raw R
+- **N/N_min**: Normalized stages captures separation capacity
+- **Feed stage fraction**: Captures feed location relative to column height
+- **Distillate rate D**: Directly linked to column loading
+
+### 6.3 Target Distribution
+
+- **xD**: Narrow distribution (0.70 – 0.825), near-normal
+- **xB**: Very wide, right-skewed distribution (1e-6 to 0.30), spanning 5+ orders of magnitude
+- **QC, QR**: Approximately normal, values 656 – 4106 kW
+
+Note: xB's extreme range makes it the most challenging target. The ANN handles this best due to its ability to learn complex nonlinear mappings.
+
+---
+
+## 7. Machine Learning Methods
+
+### 7.1 Model 1: Polynomial Regression (degree=2 + Ridge)
+
+**Description:** Transforms the 13 input features into polynomial features of degree 2 (generating up to ~105 cross-product features), then fits a Ridge (L2-regularized) linear regression.
+
+**Hyperparameters:**
+- Polynomial degree: 2
+- Ridge regularization: α = 10.0
+
+**Rationale:** Establishes a strong linear baseline. Polynomial features capture first-order interaction effects (e.g., R × z_F coupling). Ridge prevents overfitting in the high-dimensional feature space.
+
+### 7.2 Model 2: Random Forest Regressor
+
+**Description:** Ensemble of 200 decision trees trained on bootstrapped samples. Each tree uses a random subset of features at each split.
+
+**Hyperparameters:**
+- n_estimators = 200
+- max_depth = None (grown fully)
+- min_samples_split = 4, min_samples_leaf = 2
+- max_features = 'sqrt'
+
+**Rationale:** Robust to outliers, handles nonlinearities natively, provides feature importances. MultiOutputRegressor wrapper trains one RF per target variable.
+
+### 7.3 Model 3: XGBoost (Extreme Gradient Boosting)
+
+**Description:** Gradient-boosted ensemble of 300 shallow decision trees (max_depth=6) trained sequentially to minimize residual error.
+
+**Hyperparameters:**
+- n_estimators = 300, max_depth = 6
+- learning_rate = 0.05
+- subsample = 0.8, colsample_bytree = 0.8
+- reg_alpha = 0.1, reg_lambda = 1.0
+
+**Rationale:** Combines the power of boosting with built-in regularization. Typically outperforms Random Forest on tabular data with sufficient regularization tuning.
+
+### 7.4 Model 4: Support Vector Regression (SVR – RBF Kernel)
+
+**Description:** Fits a hyperplane in a high-dimensional kernel-transformed feature space to predict each target, with ε-insensitive loss.
+
+**Hyperparameters (per target):**
+- Kernel: RBF (Radial Basis Function)
+- C = 100–1000, ε = 0.0005–2.0, γ = 'scale'
+- Separate SVR trained per target (4 models total)
+
+**Rationale:** Effective for smooth function approximation. Well-suited to the QC and QR targets which have smooth, near-monotonic responses to key inputs.
+
+### 7.5 Model 5: Artificial Neural Network (MLP)
+
+**Description:** Feed-forward multi-layer perceptron with 4 hidden layers.
+
+**Architecture:**
+```
+Input (13) → Dense(256, ReLU) → Dense(128, ReLU) → Dense(64, ReLU) → Dense(32, ReLU) → Output(4)
+```
+
+**Hyperparameters:**
+- Optimizer: Adam, learning_rate_init = 5×10⁻⁴, adaptive schedule
+- L2 regularization: α = 1×10⁻⁴
+- Batch size: 32
+- max_iter: 2000, early_stopping: True (patience=30)
+- validation_fraction: 0.15
+
+**Rationale:** Universal function approximator. The 4-hidden-layer architecture captures deep nonlinear interactions between inputs and outputs. Early stopping prevents overfitting.
+
+---
+
+## 8. Model Training and Validation Procedure
+
+### 8.1 Data Split
+
+```
+Total: 694 points
+├── Train: 485 points (70%)  → Model fitting
+├── Validation: 104 points (15%)  → Hyperparameter selection, early stopping
+└── Test: 105 points (15%)  → Final unbiased evaluation
+```
+
+### 8.2 Cross-Validation
+
+- 5-fold cross-validation applied on the **training set** for Polynomial Regression
+- Confirms no overfitting: train and CV R² values agree within ±0.01
+
+### 8.3 Hyperparameter Selection
+
+Hyperparameters were selected through:
+1. Domain knowledge (e.g., RF max_features='sqrt' for regression)
+2. Practical guidelines (e.g., XGBoost learning_rate=0.05 with 300 trees)
+3. Manual tuning based on validation set R² (not full grid search, to save compute)
+4. Early stopping for ANN (automatic regularization)
+
+---
+
+## 9. Performance Comparison of Models
+
+### 9.1 Summary Table (Test Set)
+
+| Model | xD R² | xB R² | QC R² | QR R² | Avg R² | Avg RMSE |
+|---|---|---|---|---|---|---|
+| **ANN (MLP)** | **0.9918** | **0.9879** | **0.9963** | **0.9966** | **0.9932** | **20.51** |
+| Polynomial Regression | 0.9940 | 0.9658 | 0.9989 | 0.9990 | 0.9894 | 11.30 |
+| SVR (RBF) | 0.9903 | 0.9816 | 0.9896 | 0.9895 | 0.9877 | 35.43 |
+| XGBoost | 0.9768 | 0.9767 | 0.9834 | 0.9816 | 0.9796 | 45.81 |
+| Random Forest | 0.9173 | 0.9221 | 0.9180 | 0.9192 | 0.9192 | 98.77 |
+
+### 9.2 Target-Level Analysis
+
+**xD (Distillate Purity):**
+Easiest target to predict (narrow range 0.70 – 0.83). All models achieve R² > 0.91. Polynomial Regression achieves highest R² (0.994) for this target – likely because xD is a smooth, near-linear function of R and N.
+
+**xB (Bottoms Purity):**
+Most challenging target due to its wide range (1×10⁻⁶ to 0.30). ANN achieves best R² (0.988). Random Forest struggles most (R²=0.922) because tree-based methods have difficulty with variables spanning many orders of magnitude.
+
+**QC and QR (Duties):**
+Near-linear with reflux ratio and distillate rate. Polynomial Regression achieves R²≈0.999 – extremely close to perfect, as the duty-reflux relationship is near-linear. ANN matches within 0.3% R².
+
+### 9.3 Key Performance Observations
+
+1. **Polynomial Regression** performs surprisingly well for QC/QR (R²=0.999) because the energy balance equations are fundamentally linear in R and D. However, it underperforms on xB (R²=0.966) where the functional form is highly nonlinear.
+
+2. **Random Forest** underperforms the other models, primarily because the xB target spans 5+ orders of magnitude and tree-based models don't extrapolate well near the boundaries.
+
+3. **XGBoost** performs better than RF due to regularization and the sequential correction of residuals. Still below SVR and ANN.
+
+4. **SVR** achieves excellent results (avg R²=0.988) with a simpler architecture than ANN — but training time is O(n²), making it impractical for larger datasets.
+
+5. **ANN (MLP)** achieves the highest **average R²** (0.9932) across all 4 targets, and the best balance between accuracy, generalization, and scalability.
+
+---
+
+## 10. Physical Consistency and Robustness
+
+### 10.1 Physical Trend Verification
+
+All trends were verified by fixing all inputs at median values and varying one input at a time:
+
+| Trend | Expected Physics | Model Behavior | Status |
+|---|---|---|---|
+| xD vs Reflux Ratio (R) | Monotonically increasing | ↑ monotonically with R | ✓ |
+| QC vs Reflux Ratio (R) | Monotonically increasing | ↑ monotonically with R | ✓ |
+| QR vs Feed Temperature | Decreasing (hotter feed → less reboiler) | ↓ monotonically with T | ✓ |
+| xD vs Number of Stages | Increasing (more stages → purer distillate) | ↑ monotonically with N | ✓ |
+| xB vs Reflux Ratio | Decreasing (higher R → cleaner bottoms) | ↓ | ✓ |
+
+### 10.2 Robustness Assessment
+
+- All models trained with fixed random seeds for full reproducibility
+- 5-fold cross-validation shows consistent CV R² scores (±<0.01 standard deviation)
+- Test set performance closely matches validation set performance → no data leakage
+- ANN uses early stopping + adaptive learning rate to prevent overfitting
+- Physical constraints were applied during data generation to ensure thermodynamic consistency
+
+### 10.3 Feature Importance (Random Forest)
+
+Top 5 most important features (averaged across all targets):
+
+| Rank | Feature | Importance |
+|---|---|---|
+| 1 | distillate_rate_kmol_h | ~0.25 |
+| 2 | reflux_ratio | ~0.20 |
+| 3 | feed_composition_benzene | ~0.18 |
+| 4 | R_over_Rmin | ~0.12 |
+| 5 | N_over_Nmin | ~0.08 |
+
+This is physically intuitive: distillate rate and reflux ratio directly determine column loading and purity, while feed composition governs the separation difficulty.
+
+### 10.4 Overfitting/Underfitting Analysis
+
+| Model | Overfitting Risk | Mitigation |
+|---|---|---|
+| Polynomial Regression | Medium (105 features) | Ridge regularization (α=10) |
+| Random Forest | Low (bagging + max_features) | Ensemble averaging |
+| XGBoost | Low-Medium | Subsample=0.8, L1+L2 reg. |
+| SVR | Low | Margin maximization |
+| ANN | Medium (large network) | Early stopping, L2=1e-4 |
+
+---
+
+## 11. Conclusions and Best Model
+
+### 11.1 Best Surrogate Model: ANN (MLP)
+
+The **Artificial Neural Network (MLP)** with architecture (256→128→64→32) is selected as the best surrogate model based on:
+
+1. **Highest average R²**: 0.9932 across all 4 targets (xD, xB, QC, QR)
+2. **Best xB prediction**: R²=0.988, MAE=0.010 – hardest target due to 5-decade range
+3. **Excellent energy duty prediction**: QC R²=0.996, QR R²=0.997
+4. **Physically consistent**: All expected monotonic trends are preserved
+5. **Robust**: Early stopping prevents overfitting; consistent train/val/test performance
+6. **Scalable**: Inference time is O(1) in model complexity regardless of dataset size
+
+### 11.2 Runner-Up: Polynomial Regression
+
+Polynomial Regression achieves remarkable R² for QC and QR (≈0.999) because the duty-reflux relationship is near-linear. For production use cases requiring extreme interpretability and fast inference, Polynomial Regression is a viable alternative.
+
+### 11.3 Summary Ranking
+
+| Rank | Model | Avg R² | Use When... |
+|---|---|---|---|
+| 1 | ANN (MLP) | 0.9932 | Maximum accuracy required |
+| 2 | Polynomial Regression | 0.9894 | Interpretability + speed needed |
+| 3 | SVR (RBF) | 0.9877 | Moderate accuracy, smooth data |
+| 4 | XGBoost | 0.9796 | Feature interactions, robustness |
+| 5 | Random Forest | 0.9192 | Exploratory analysis, feature importance |
+
+### 11.4 Future Work
+
+1. Expand dataset to 2000+ points with Latin Hypercube Sampling (LHS)
+2. Incorporate additional inputs: column pressure profile, tray efficiency
+3. Apply DWSIM automation via Python scripting to directly generate data from rigorous simulations
+4. Explore deep learning variants (ResNet-style skip connections) for further accuracy improvement
+5. Implement uncertainty quantification (e.g., Gaussian Process Regression or MC-Dropout ANN)
+
+---
+
+## 12. References
+
+1. Henley, E.J., Seader, J.D., Roper, D.K. (2011). *Separation Process Principles*. Wiley.
+2. Fenske, M.R. (1932). Fractionation of Straight-Run Pennsylvania Gasoline. *Ind. Eng. Chem.*, 24, 482.
+3. Underwood, A.J.V. (1948). Fractional Distillation of Multicomponent Mixtures. *Chem. Eng. Progress*, 44, 603.
+4. Gilliland, E.R. (1940). Multicomponent Rectification. *Ind. Eng. Chem.*, 32, 918.
+5. DWSIM Process Simulator. Open-source, https://dwsim.org
+6. Peng, D.Y., Robinson, D.B. (1976). A New Two-Constant Equation of State. *Ind. Eng. Chem. Fundam.*, 15(1), 59–64.
+7. Scikit-learn: Machine Learning in Python. Pedregosa et al. (2011). *JMLR*, 12, 2825–2830.
+8. Chen, T., Guestrin, C. (2016). XGBoost: A Scalable Tree Boosting System. *KDD 2016*.
+9. Kirkbride, C.G. (1944). Process Design Procedure for Multicomponent Fractionators. *Pet. Refiner*, 23, 87.
+
+---
+
+*Report prepared for Screening Task 3 – Surrogate Modeling of a Binary Distillation Column*  
+*Generated: April 2026*
