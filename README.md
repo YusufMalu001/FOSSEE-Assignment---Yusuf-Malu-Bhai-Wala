@@ -5,17 +5,17 @@
 ![Machine Learning](https://img.shields.io/badge/Machine%20Learning-Regression-green.svg)
 ![Chemical Engineering](https://img.shields.io/badge/Core-Chemical%20Engineering-orange.svg)
 
-### 📊 Project Overview
+###  Project Overview
 This repository contains the implementation of a **Surrogate Model** for a binary distillation column (Benzene-Toluene system). The goal is to predict critical column performance variables using data-driven machine learning models, derived from physically consistent simulations using the **Fenske-Underwood-Gilliland (FUG)** shortcut method.
 
-### 🔬 Technical Specifications
+###  Technical Specifications
 - **System:** Binary mixture of Benzene (Light Key) and Toluene (Heavy Key).
 - **Thermodynamic Model:** Peng-Robinson (PR) Equation of State.
 - **Simulation Method:** FUG Shortcut Equations for calculating minimum stages, minimum reflux, and optimal feed stage.
 - **Input Variables:** Feed Temperature, Pressure, Composition, No. of Stages, Feed Stage, Reflux Ratio, Bottoms Rate.
 - **Target Variables:** Distillate Purity ($x_D$), Bottoms Purity ($x_B$), Condenser Duty ($Q_C$), Reboiler Duty ($Q_R$).
 
-### 🤖 Machine Learning Models
+###  Machine Learning Models
 We implement and compare five different regression architectures to identify the most robust surrogate:
 1. **Polynomial Regression:** Baseline model with 2nd-degree features.
 2. **Random Forest:** Ensemble of decision trees for non-linear capturing.
@@ -23,7 +23,7 @@ We implement and compare five different regression architectures to identify the
 4. **Support Vector Regression (SVR):** RBF kernel-based regression.
 5. **Artificial Neural Network (ANN):** Multi-layer Perceptron (MLP) for complex mapping.
 
-### 📁 Directory Structure
+###  Directory Structure
 ```text
 ├── DWSim/              # Flowsheet and simulation files
 ├── data/               # Generated dataset (dataset.csv)
@@ -35,7 +35,7 @@ We implement and compare five different regression architectures to identify the
 └── report/             # Final Technical Report
 ```
 
-### 🚀 Getting Started
+###  Getting Started
 1. **Install Dependencies:**
    ```bash
    pip install numpy pandas scikit-learn matplotlib seaborn xgboost
@@ -45,7 +45,7 @@ We implement and compare five different regression architectures to identify the
 3. **Train Models:**
    Open `notebooks/ml_model.ipynb` to execute the EDA and model training pipeline.
 
-### 📈 Results
+###  Results
 The surrogate models achieve high accuracy on the test set, with **Random Forest** and **ANN** typically showing the best performance for predicting heat duties and component compositions respectively.
 
 ---
